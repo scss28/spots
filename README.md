@@ -6,8 +6,8 @@ that!
 
 ### Features
 - Textured/non-textured quad rendering with many configurable options.
-- Text rendering.
 - Instanced rendering (many quads per draw call).
+- Text rendering (instanced).
 - Render targets. 
 
 ## Examples
