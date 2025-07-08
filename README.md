@@ -11,5 +11,7 @@ that!
 - Render targets. 
 
 ## Examples
-Run an example with `zig build run-spinning_quad` (to run a different example
-replace "spinning_quad" with an example name).
+Run an example with `zig build run-particles` (to run a different example
+replace "particles" with an example name).
+
+![til](./particles.gif)

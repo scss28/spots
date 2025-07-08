@@ -21,6 +21,7 @@ pub fn build(b: *std.Build) void {
     const Example = enum {
         spinning_quad,
         terra,
+        particles,
     };
 
     inline for (@typeInfo(Example).@"enum".fields) |field| {

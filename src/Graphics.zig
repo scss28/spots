@@ -883,8 +883,7 @@ pub fn drawText(g: *const Graphics, text: []const u8, options: DrawTextOptions) 
     const default_glyph = font.defaultGlyph();
 
     const font_texture_size = font.texture.size(g);
-    const line_height = (font_texture_size.y - font.descent) *
-        options.scale.y +
+    const line_height = (font_texture_size.y - font.descent) * options.scale.y +
         options.padding.y;
 
     var y = options.position.y - line_height;
@@ -930,7 +929,7 @@ pub fn drawText(g: *const Graphics, text: []const u8, options: DrawTextOptions) 
                 else => {
                     b.draw(glyph.sub_index, .{
                         .position = position,
-                        .scale = .div(font_texture_size, glyph_size),
+                        .scale = .mul(.div(font_texture_size, glyph_size), options.scale),
                     });
                 },
             }

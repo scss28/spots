@@ -38,27 +38,24 @@ pub fn main() !void {
             glfw.setWindowShouldClose(window, true);
         }
 
-        {
-            g.clearColor(.cornflower_blue);
+        g.clearColor(.cornflower_blue);
+        g.drawQuad(.{
+            .position = .init(target_width / 2, target_height / 2),
+            .origin = .splat(0.5),
+            .scale = .init(20, 20),
+            .rotation = t,
+            .color = .lerp(.blue, .yellow, @sin(t)),
+        });
 
-            g.drawQuad(.{
-                .position = .init(target_width / 2, target_height / 2),
-                .origin = .splat(0.5),
-                .scale = .init(target_width, target_height),
-                .rotation = t,
-                .color = .lerp(.blue, .yellow, @sin(t)),
-            });
+        g.setTarget(.screen);
+        defer g.setTarget(downscaled_target);
 
-            g.setTarget(.screen);
-            defer g.setTarget(downscaled_target);
-
-            g.drawQuad(.{
-                .position = .splat(0),
-                .sprite = downscaled_target.sprite(&g),
-                .scale = .div(g.screenSize(), downscaled_target.size(&g)),
-                .mirroring = .vertical,
-            });
-        }
+        g.drawQuad(.{
+            .position = .splat(0),
+            .sprite = downscaled_target.sprite(&g),
+            .scale = .div(g.screenSize(), downscaled_target.size(&g)),
+            .mirroring = .vertical,
+        });
 
         glfw.swapBuffers(window);
         glfw.pollEvents();

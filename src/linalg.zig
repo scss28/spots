@@ -5,10 +5,10 @@ pub fn Vec2(T: type) type {
         x: T,
         y: T,
 
-        pub const up = .{ .x = 0, .y = 1 };
-        pub const down = .{ .x = 0, .y = -1 };
-        pub const right = .{ .x = 1, .y = 0 };
-        pub const left = .{ .x = -1, .y = 0 };
+        pub const up: Self = .{ .x = 0, .y = 1 };
+        pub const down: Self = .{ .x = 0, .y = -1 };
+        pub const right: Self = .{ .x = 1, .y = 0 };
+        pub const left: Self = .{ .x = -1, .y = 0 };
 
         pub inline fn init(x: T, y: T) Self {
             return .{ .x = x, .y = y };
