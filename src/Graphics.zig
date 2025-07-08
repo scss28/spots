@@ -392,7 +392,7 @@ pub fn init(
     var sprites: std.ArrayListUnmanaged(Sprite) = try .initCapacity(gpa, sprites_capacity);
     sprites.items.len = sprites_capacity;
 
-    const white_pixel_texture = createTexture(1, 1, .rgba8);
+    const white_pixel_texture = createTexture(1, 1, .rgba8, .nearest, .nearest);
 
     gl.bindTexture(white_pixel_texture, .@"2d");
     defer gl.bindTexture(.invalid, .@"2d");
@@ -454,86 +454,37 @@ pub fn init(
     return g;
 }
 
-pub fn createSprite(
-    g: *Graphics,
-    gpa: mem.Allocator,
-    width: u32,
-    height: u32,
-) mem.Allocator.Error!Sprite.Index {
-    const texture = createTexture(width, height, .rgba8);
-
-    const index: Sprite.Index = @enumFromInt(g.sprites.items.len);
-    try g.sprites.append(gpa, .{
-        .texture = texture,
-        .width = width,
-        .height = height,
-    });
-
-    return index;
-}
-
-pub const CreateTextureArrayOptions = struct {
-    format: enum { rgba, red } = .rgba,
-    filter: enum { nearest, linear } = .nearest,
-};
-
-pub fn createTextureArray(
-    g: *Graphics,
-    gpa: mem.Allocator,
-    width: u32,
-    height: u32,
-    depth: u32,
-    options: CreateTextureArrayOptions,
-) mem.Allocator.Error!TextureArray.Index {
-    const texture = gl.createTexture(.@"2d_array");
-
-    gl.bindTexture(texture, .@"2d_array");
-    defer gl.bindTexture(.invalid, .@"2d_array");
-
-    const format: gl.TextureInternalFormat = switch (options.format) {
-        .rgba => .rgba8,
-        .red => .r8,
-    };
-    gl.textureStorage3D(texture, 1, format, width, height, depth);
-
-    gl.textureParameter(texture, .wrap_s, .clamp_to_edge);
-    gl.textureParameter(texture, .wrap_t, .clamp_to_edge);
-
-    const min_filter: gl.TextureParameterType(.min_filter) = switch (options.filter) {
-        .linear => .linear,
-        .nearest => .nearest,
-    };
-    gl.textureParameter(texture, .min_filter, min_filter);
-
-    const mag_filter: gl.TextureParameterType(.mag_filter) = switch (options.filter) {
-        .linear => .linear,
-        .nearest => .nearest,
-    };
-    gl.textureParameter(texture, .mag_filter, mag_filter);
-
-    const sub_textures_index: u32 = @intCast(g.sub_textures.items.len);
-    try g.sub_textures.appendNTimes(gpa, undefined, depth);
-
-    const index: TextureArray.Index = @enumFromInt(g.texture_arrays.items.len);
-    try g.texture_arrays.append(gpa, .{
-        .texture = texture,
-        .width = width,
-        .height = height,
-        .depth = depth,
-        .sub_textures_index = sub_textures_index,
-    });
-
-    return index;
-}
-
 pub const PixelData = struct {
     data: [*]const u8,
 
     format: Format,
     type: Type,
 
-    const Format = enum { red, green, blue, rgba };
-    const Type = enum { u8 };
+    pub const Format = enum {
+        red,
+        green,
+        blue,
+        rgba,
+
+        inline fn glPixelFormat(f: Format) gl.PixelFormat {
+            return switch (f) {
+                .red => .red,
+                .green => .green,
+                .blue => .blue,
+                .rgba => .rgba,
+            };
+        }
+    };
+
+    pub const Type = enum {
+        u8,
+
+        inline fn glPixelType(t: Type) gl.PixelType {
+            return switch (t) {
+                .u8 => .unsigned_byte,
+            };
+        }
+    };
 
     pub inline fn r8(data: [*]const u8) PixelData {
         return .{
@@ -568,6 +519,130 @@ pub const PixelData = struct {
     }
 };
 
+pub const Filter = enum {
+    nearest,
+    linear,
+
+    inline fn glMinFilter(f: Filter) gl.TextureParameterType(.min_filter) {
+        return switch (f) {
+            .linear => .linear,
+            .nearest => .nearest,
+        };
+    }
+
+    inline fn glMagFilter(f: Filter) gl.TextureParameterType(.mag_filter) {
+        return switch (f) {
+            .linear => .linear,
+            .nearest => .nearest,
+        };
+    }
+};
+
+pub const InternalFormat = enum {
+    rgba,
+    red,
+
+    inline fn glInternalFormat(f: InternalFormat) gl.TextureInternalFormat {
+        return switch (f) {
+            .rgba => .rgba8,
+            .red => .r8,
+        };
+    }
+};
+
+pub const CreateSpriteOptions = struct {
+    format: InternalFormat = .rgba,
+    filter: Filter = .nearest,
+};
+
+pub fn createSprite(
+    g: *Graphics,
+    gpa: mem.Allocator,
+    width: u32,
+    height: u32,
+    pixel_data: ?PixelData,
+    options: CreateSpriteOptions,
+) mem.Allocator.Error!Sprite.Index {
+    const texture = createTexture(
+        width,
+        height,
+        options.format.glInternalFormat(),
+        options.filter.glMinFilter(),
+        options.filter.glMagFilter(),
+    );
+
+    if (pixel_data) |data| {
+        gl.bindTexture(texture, .@"2d");
+        defer gl.bindTexture(.invalid, .@"2d");
+
+        const pixel_format = data.format.glPixelFormat();
+
+        if (pixel_format != .rgba) gl.pixelStore(.unpack_alignment, 1);
+        defer gl.pixelStore(.unpack_alignment, 4);
+
+        gl.texSubImage2D(
+            .@"2d",
+            0,
+            0,
+            0,
+            width,
+            height,
+            pixel_format,
+            data.type.glPixelType(),
+            data.data,
+        );
+    }
+
+    const index: Sprite.Index = @enumFromInt(g.sprites.items.len);
+    try g.sprites.append(gpa, .{
+        .texture = texture,
+        .width = width,
+        .height = height,
+    });
+
+    return index;
+}
+
+pub const CreateTextureArrayOptions = struct {
+    format: InternalFormat = .rgba,
+    filter: Filter = .nearest,
+};
+
+pub fn createTextureArray(
+    g: *Graphics,
+    gpa: mem.Allocator,
+    width: u32,
+    height: u32,
+    depth: u32,
+    options: CreateTextureArrayOptions,
+) mem.Allocator.Error!TextureArray.Index {
+    const texture = gl.createTexture(.@"2d_array");
+
+    gl.bindTexture(texture, .@"2d_array");
+    defer gl.bindTexture(.invalid, .@"2d_array");
+
+    gl.textureStorage3D(texture, 1, options.format.glInternalFormat(), width, height, depth);
+
+    gl.textureParameter(texture, .wrap_s, .clamp_to_edge);
+    gl.textureParameter(texture, .wrap_t, .clamp_to_edge);
+    gl.textureParameter(texture, .min_filter, options.filter.glMinFilter());
+    gl.textureParameter(texture, .mag_filter, options.filter.glMagFilter());
+
+    const sub_textures_index: u32 = @intCast(g.sub_textures.items.len);
+    try g.sub_textures.appendNTimes(gpa, undefined, depth);
+
+    const index: TextureArray.Index = @enumFromInt(g.texture_arrays.items.len);
+    try g.texture_arrays.append(gpa, .{
+        .texture = texture,
+        .width = width,
+        .height = height,
+        .depth = depth,
+        .sub_textures_index = sub_textures_index,
+    });
+
+    return index;
+}
+
 pub fn setSubTexture(
     g: *Graphics,
     texture: TextureArray.Index,
@@ -581,19 +656,10 @@ pub fn setSubTexture(
     assert(width <= t.width);
     assert(height <= t.height);
 
-    const pixel_format: gl.PixelFormat = switch (pixel_data.format) {
-        .red => .red,
-        .green => .green,
-        .blue => .blue,
-        .rgba => .rgba,
-    };
+    const pixel_format = pixel_data.format.glPixelFormat();
 
     if (pixel_format != .rgba) gl.pixelStore(.unpack_alignment, 1);
     defer gl.pixelStore(.unpack_alignment, 4);
-
-    const pixel_type: gl.PixelType = switch (pixel_data.type) {
-        .u8 => .unsigned_byte,
-    };
 
     gl.textureSubImage3D(
         t.texture,
@@ -605,7 +671,7 @@ pub fn setSubTexture(
         height,
         1,
         pixel_format,
-        pixel_type,
+        pixel_data.type.glPixelType(),
         pixel_data.data,
     );
 
@@ -623,7 +689,7 @@ pub fn createTarget(
     width: u32,
     height: u32,
 ) mem.Allocator.Error!Target.Index {
-    const sprite = try g.createSprite(gpa, width, height);
+    const sprite = try g.createSprite(gpa, width, height, null, .{});
     const buffer = gl.genFramebuffer();
 
     gl.bindFramebuffer(buffer, .buffer);
@@ -984,6 +1050,7 @@ const Batch = struct {
         b.len += 1;
     }
 
+    /// If there is anything in the buffer performs a draw call.
     pub fn flush(b: *Batch) void {
         if (b.len == 0) return;
         defer b.len = 0;
@@ -1024,7 +1091,13 @@ pub inline fn batch(g: *const Graphics, options: BatchOptions) Batch {
     };
 }
 
-fn createTexture(width: u32, height: u32, format: gl.TextureInternalFormat) gl.Texture {
+fn createTexture(
+    width: u32,
+    height: u32,
+    format: gl.TextureInternalFormat,
+    min_filter: gl.TextureParameterType(.min_filter),
+    mag_filter: gl.TextureParameterType(.mag_filter),
+) gl.Texture {
     const texture = gl.createTexture(.@"2d");
 
     gl.bindTexture(texture, .@"2d");
@@ -1034,8 +1107,8 @@ fn createTexture(width: u32, height: u32, format: gl.TextureInternalFormat) gl.T
 
     gl.textureParameter(texture, .wrap_s, .repeat);
     gl.textureParameter(texture, .wrap_t, .repeat);
-    gl.textureParameter(texture, .min_filter, .nearest);
-    gl.textureParameter(texture, .mag_filter, .nearest);
+    gl.textureParameter(texture, .min_filter, min_filter);
+    gl.textureParameter(texture, .mag_filter, mag_filter);
 
     return texture;
 }
