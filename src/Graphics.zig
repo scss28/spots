@@ -8,6 +8,7 @@ const heap = std.heap;
 const math = std.math;
 
 const assert = std.debug.assert;
+const panic = std.debug.panic;
 
 const gl = @import("gl");
 const TrueType = @import("TrueType");
@@ -268,13 +269,15 @@ targets: std.ArrayListUnmanaged(Target),
 instance_program: gl.Program,
 instance_vao: gl.VertexArray,
 instance_buffer: gl.Buffer,
+
 batch_buf: []InstanceData,
+batch_buf_used: bool,
 
 text_program: gl.Program,
 fonts: std.ArrayListUnmanaged(Font),
 
 const instances_per_draw = 8_192;
-const InstanceData = struct {
+pub const InstanceData = struct {
     index: f32,
     color: Color,
     source: Vec4f,
@@ -392,7 +395,7 @@ pub fn init(
     var sprites: std.ArrayListUnmanaged(Sprite) = try .initCapacity(gpa, sprites_capacity);
     sprites.items.len = sprites_capacity;
 
-    const white_pixel_texture = createTexture(1, 1, .rgba8, .nearest, .nearest);
+    const white_pixel_texture = createTexture(1, 1, .rgba8);
 
     gl.bindTexture(white_pixel_texture, .@"2d");
     defer gl.bindTexture(.invalid, .@"2d");
@@ -443,6 +446,7 @@ pub fn init(
         .instance_vao = instance_vao,
         .instance_buffer = instance_buffer,
         .batch_buf = try gpa.alloc(InstanceData, options.batch_buf_size),
+        .batch_buf_used = false,
         .text_program = text_program,
         .fonts = .empty,
     };
@@ -552,7 +556,6 @@ pub const InternalFormat = enum {
 
 pub const CreateSpriteOptions = struct {
     format: InternalFormat = .rgba,
-    filter: Filter = .nearest,
 };
 
 pub fn createSprite(
@@ -567,8 +570,6 @@ pub fn createSprite(
         width,
         height,
         options.format.glInternalFormat(),
-        options.filter.glMinFilter(),
-        options.filter.glMagFilter(),
     );
 
     if (pixel_data) |data| {
@@ -605,7 +606,6 @@ pub fn createSprite(
 
 pub const CreateTextureArrayOptions = struct {
     format: InternalFormat = .rgba,
-    filter: Filter = .nearest,
 };
 
 pub fn createTextureArray(
@@ -625,8 +625,6 @@ pub fn createTextureArray(
 
     gl.textureParameter(texture, .wrap_s, .clamp_to_edge);
     gl.textureParameter(texture, .wrap_t, .clamp_to_edge);
-    gl.textureParameter(texture, .min_filter, options.filter.glMinFilter());
-    gl.textureParameter(texture, .mag_filter, options.filter.glMagFilter());
 
     const sub_textures_index: u32 = @intCast(g.sub_textures.items.len);
     try g.sub_textures.appendNTimes(gpa, undefined, depth);
@@ -805,7 +803,6 @@ pub fn loadFont(
         @intCast(bitmaps.items.len),
         .{
             .format = .red,
-            .filter = .linear,
         },
     );
 
@@ -865,6 +862,7 @@ pub const DrawQuadOptions = struct {
     scale: Vec2f = .splat(1),
     mirroring: Mirroring = .none,
     zoom: f32 = 1,
+    filter: Filter = .nearest,
 };
 
 pub const Mirroring = enum {
@@ -899,7 +897,11 @@ pub fn drawQuad(g: *const Graphics, options: DrawQuadOptions) void {
     gl.uniform4f(5, options.color.r, options.color.g, options.color.b, options.color.a);
 
     // `uTexture`
-    gl.bindTexture(options.sprite.texture(g), .@"2d");
+    const texture = options.sprite.texture(g);
+    gl.bindTexture(texture, .@"2d");
+    gl.textureParameter(texture, .min_filter, options.filter.glMinFilter());
+    gl.textureParameter(texture, .mag_filter, options.filter.glMagFilter());
+
     gl.drawArrays(.triangle_strip, 0, 4);
 }
 
@@ -944,7 +946,43 @@ pub const DrawTextOptions = struct {
     color: Color = .white,
 };
 
-pub fn drawText(g: *const Graphics, text: []const u8, options: DrawTextOptions) void {
+pub fn drawText(
+    g: *Graphics,
+    text: []const u8,
+    options: DrawTextOptions,
+) error{BufferInUse}!void {
+    const font = g.fonts.items[@intFromEnum(options.font)];
+    var b = try g.batch(.{
+        .texture_array = font.texture,
+    });
+    b.program = g.text_program;
+    defer b.flush();
+
+    g.drawTextBatch(&b, text, options);
+}
+
+pub fn drawTextBuf(
+    g: *Graphics,
+    text: []const u8,
+    buf: []InstanceData,
+    options: DrawTextOptions,
+) void {
+    const font = g.fonts.items[@intFromEnum(options.font)];
+    var b = g.batchBuf(buf, .{
+        .texture_array = font.texture,
+    });
+    b.program = g.text_program;
+    defer b.flush();
+
+    g.drawTextBatch(&b, text, options);
+}
+
+fn drawTextBatch(
+    g: *Graphics,
+    b: *Batch,
+    text: []const u8,
+    options: DrawTextOptions,
+) void {
     const font = g.fonts.items[@intFromEnum(options.font)];
     const default_glyph = font.defaultGlyph();
 
@@ -960,18 +998,8 @@ pub fn drawText(g: *const Graphics, text: []const u8, options: DrawTextOptions) 
         ) * line_height;
         y += text_height * (1 - options.pivot.y);
     }
-
-    var b: Batch = .{
-        .graphics = g,
-        .texture = font.texture,
-        .program = g.text_program,
-
-        .buf = g.batch_buf,
-        .len = 0,
-    };
-    defer b.flush();
-
     var lines = mem.tokenizeScalar(u8, text, '\n');
+
     while (lines.next()) |line| {
         var x = options.position.x;
         if (options.pivot.y != 0) {
@@ -1006,9 +1034,10 @@ pub fn drawText(g: *const Graphics, text: []const u8, options: DrawTextOptions) 
 }
 
 const Batch = struct {
-    graphics: *const Graphics,
+    graphics: *Graphics,
     texture: TextureArray.Index,
     program: gl.Program,
+    filter: Filter,
 
     len: u32,
     buf: []InstanceData,
@@ -1027,6 +1056,7 @@ const Batch = struct {
     /// May do a draw call or not depending if the batch buffer is filled. \
     /// Call `flush` after all draws to make sure the draw call actually happens.
     pub fn draw(b: *Batch, index: TextureArray.SubTexture.Index, options: DrawOptions) void {
+        if (b.buf.ptr == b.graphics.batch_buf.ptr) b.graphics.batch_buf_used = true;
         if (b.len == b.buf.len) b.flush();
 
         const sub_size = b.texture.subTextureSize(b.graphics, index);
@@ -1052,6 +1082,7 @@ const Batch = struct {
 
     /// If there is anything in the buffer performs a draw call.
     pub fn flush(b: *Batch) void {
+        if (b.buf.ptr == b.graphics.batch_buf.ptr) b.graphics.batch_buf_used = false;
         if (b.len == 0) return;
         defer b.len = 0;
 
@@ -1067,6 +1098,8 @@ const Batch = struct {
 
         const texture = b.texture.texture(b.graphics);
         gl.bindTexture(texture, .@"2d_array");
+        gl.textureParameter(texture, .min_filter, b.filter.glMinFilter());
+        gl.textureParameter(texture, .mag_filter, b.filter.glMagFilter());
 
         gl.useProgram(b.program);
         defer gl.useProgram(.invalid);
@@ -1077,14 +1110,37 @@ const Batch = struct {
 
 pub const BatchOptions = struct {
     texture_array: TextureArray.Index = .white_pixel,
+    filter: Filter = .nearest,
 };
 
-/// Currently **ONE** batch should be used at a time.
-pub inline fn batch(g: *const Graphics, options: BatchOptions) Batch {
+/// Creates a batch with a provided buffer. Useful if the default buffer is
+/// currently in use.
+pub inline fn batchBuf(g: *Graphics, buf: []InstanceData, options: BatchOptions) Batch {
+    assert(buf.len > 0);
     return .{
         .graphics = g,
         .texture = options.texture_array,
         .program = g.instance_program,
+        .filter = options.filter,
+
+        .buf = buf,
+        .len = 0,
+    };
+}
+
+/// Returns `error.BufferInUse` if the default batch buffer is currently in use.
+pub fn batch(
+    g: *Graphics,
+    options: BatchOptions,
+) error{BufferInUse}!Batch {
+    if (g.batch_buf_used) return error.BufferInUse;
+    g.batch_buf_used = true;
+
+    return .{
+        .graphics = g,
+        .texture = options.texture_array,
+        .program = g.instance_program,
+        .filter = options.filter,
 
         .buf = g.batch_buf,
         .len = 0,
@@ -1095,8 +1151,6 @@ fn createTexture(
     width: u32,
     height: u32,
     format: gl.TextureInternalFormat,
-    min_filter: gl.TextureParameterType(.min_filter),
-    mag_filter: gl.TextureParameterType(.mag_filter),
 ) gl.Texture {
     const texture = gl.createTexture(.@"2d");
 
@@ -1107,8 +1161,6 @@ fn createTexture(
 
     gl.textureParameter(texture, .wrap_s, .repeat);
     gl.textureParameter(texture, .wrap_t, .repeat);
-    gl.textureParameter(texture, .min_filter, min_filter);
-    gl.textureParameter(texture, .mag_filter, mag_filter);
 
     return texture;
 }

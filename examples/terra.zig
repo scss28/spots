@@ -67,7 +67,7 @@ pub fn main() !void {
         g.clearColor(.cornflower_blue);
 
         {
-            var b = g.batch(.{});
+            var b = try g.batch(.{});
             defer b.flush();
 
             for (0..tilemap.height) |j| for (0..tilemap.width) |i| {

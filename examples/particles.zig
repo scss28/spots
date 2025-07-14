@@ -103,7 +103,7 @@ pub fn main() !void {
         g.clearColor(.cornflower_blue);
 
         {
-            var b = g.batch(.{});
+            var b = try g.batch(.{});
             defer b.flush();
 
             for (particles.items) |p| {
@@ -117,7 +117,7 @@ pub fn main() !void {
             }
         }
 
-        g.drawText(text, .{
+        try g.drawText(text, .{
             .font = font,
             .position = .splat(target_size / 2),
             .pivot = .splat(0.5),
