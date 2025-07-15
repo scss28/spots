@@ -15,8 +15,8 @@ const TrueType = @import("TrueType");
 
 const linalg = @import("linalg.zig");
 
-pub const Vec2f = linalg.Vec2(f32);
-pub const Vec4f = linalg.Vec4(f32);
+const Vec2f = linalg.Vec2(f32);
+const Vec4f = linalg.Vec4(f32);
 
 const Graphics = @This();
 
@@ -116,24 +116,57 @@ pub const Font = struct {
         sub_index: TextureArray.SubTexture.Index,
     };
 
-    pub const Index = enum(u32) { _ };
+    pub const Index = enum(u32) {
+        _,
 
-    pub fn calculateWidth(f: Font, text: []const u8) f32 {
-        const default_glyph = f.defaultGlyph();
-        var line_width: f32 = 0;
+        pub fn measure(
+            i: Index,
+            graphics: *const Graphics,
+            text: []const u8,
+            padding: Vec2f,
+        ) Vec2f {
+            var width: f32 = 0;
+            var line_count: f32 = 0;
 
-        var it: std.unicode.Utf8Iterator = .{ .bytes = text, .i = 0 };
-        while (it.nextCodepoint()) |codepoint| {
-            const glyph = f.glyphs.get(codepoint) orelse default_glyph;
-            line_width += glyph.advance;
+            var lines = mem.splitScalar(u8, text, '\n');
+            while (lines.next()) |line| : (line_count += 1) {
+                const line_width: f32 = i.lineWidth(graphics, line, padding.x);
+                if (line_width > width) width = line_width;
+            }
+
+            return .init(width, (i.lineHeight(graphics) + padding.y) * line_count);
         }
 
-        return line_width;
-    }
+        pub fn lineWidth(
+            i: Index,
+            graphics: *const Graphics,
+            line: []const u8,
+            padding: f32,
+        ) f32 {
+            const font = graphics.fonts.items[@intFromEnum(i)];
+            const default_glyph = i.defaultGlyph(graphics);
 
-    pub inline fn defaultGlyph(f: Font) Glyph {
-        return f.glyphs.get(32).?;
-    }
+            var width: f32 = 0;
+            var it: std.unicode.Utf8Iterator = .{ .bytes = line, .i = 0 };
+            while (it.nextCodepoint()) |codepoint| {
+                const glyph = font.glyphs.get(codepoint) orelse default_glyph;
+                width += glyph.advance + padding;
+            }
+
+            return width;
+        }
+
+        pub fn lineHeight(i: Index, graphics: *const Graphics) f32 {
+            const font = graphics.fonts.items[@intFromEnum(i)];
+            const font_texture_size = font.texture.size(graphics);
+            return font_texture_size.y - font.descent;
+        }
+
+        pub inline fn defaultGlyph(i: Index, graphics: *const Graphics) Glyph {
+            const font = graphics.fonts.items[@intFromEnum(i)];
+            return font.glyphs.get(32).?;
+        }
+    };
 };
 
 pub const Target = union {
@@ -566,12 +599,7 @@ pub fn createSprite(
     pixel_data: ?PixelData,
     options: CreateSpriteOptions,
 ) mem.Allocator.Error!Sprite.Index {
-    const texture = createTexture(
-        width,
-        height,
-        options.format.glInternalFormat(),
-    );
-
+    const texture = createTexture(width, height, options.format.glInternalFormat());
     if (pixel_data) |data| {
         gl.bindTexture(texture, .@"2d");
         defer gl.bindTexture(.invalid, .@"2d");
@@ -940,7 +968,9 @@ fn normalizeSource(
 pub const DrawTextOptions = struct {
     font: Font.Index,
     position: Vec2f,
+    rotation: f32 = 0,
     pivot: Vec2f = .init(0, 1),
+    alignment: enum { left, center, right } = .left,
     scale: Vec2f = .splat(1),
     padding: Vec2f = .splat(0),
     color: Color = .white,
@@ -984,52 +1014,74 @@ fn drawTextBatch(
     options: DrawTextOptions,
 ) void {
     const font = g.fonts.items[@intFromEnum(options.font)];
-    const default_glyph = font.defaultGlyph();
-
     const font_texture_size = font.texture.size(g);
-    const line_height = (font_texture_size.y - font.descent) * options.scale.y +
-        options.padding.y;
+    const line_height = options.font.lineHeight(g);
+    const default_glyph = options.font.defaultGlyph(g);
 
-    var y = options.position.y - line_height;
-    if (options.pivot.y != 1) {
-        const text_height = @as(
-            f32,
-            @floatFromInt(mem.count(u8, text, "\n") + 1),
-        ) * line_height;
-        y += text_height * (1 - options.pivot.y);
-    }
+    const rvec: Vec2f = .init(@cos(options.rotation), @sin(options.rotation));
+    const rvec_rot90: Vec2f = .init(-rvec.y, rvec.x);
+    const bounds: Vec2f = options.font.measure(g, text, options.padding);
+
+    var up: Vec2f = .scale(rvec_rot90, options.pivot.y * bounds.y * options.scale.y);
+
     var lines = mem.tokenizeScalar(u8, text, '\n');
-
     while (lines.next()) |line| {
-        var x = options.position.x;
-        if (options.pivot.y != 0) {
-            const line_width: f32 = font.calculateWidth(line) * options.scale.x;
-            x -= line_width * options.pivot.x;
+        var right: Vec2f = .scale(rvec, -options.pivot.x * bounds.x * options.scale.x);
+        switch (options.alignment) {
+            .left => {},
+            inline .center, .right => |alignment| {
+                const line_width = options.font.lineWidth(g, line, options.padding.x);
+
+                var offset = bounds.x - line_width;
+                if (alignment == .center) offset /= 2;
+
+                right = .add(right, .scale(rvec, offset * options.scale.x));
+            },
         }
 
         var it: unicode.Utf8Iterator = .{ .bytes = line, .i = 0 };
         while (it.nextCodepoint()) |codepoint| {
             const glyph = font.glyphs.get(codepoint) orelse default_glyph;
-            const glyph_size = glyph.sub_index.size(g, font.texture);
-
-            const position: Vec2f = .init(
-                x + glyph.bearing.x * options.scale.x,
-                y - (font_texture_size.y + glyph.bearing.y) * options.scale.y,
-            );
-
-            x += glyph.advance * options.scale.x + options.padding.x;
             switch (codepoint) {
-                '\t', ' ' => continue,
+                '\t', ' ' => {},
                 else => {
+                    const offset: Vec2f = .add(
+                        .scale(rvec, glyph.bearing.x * options.scale.x),
+                        .scale(
+                            rvec_rot90,
+                            -(font_texture_size.y + glyph.bearing.y) * options.scale.y,
+                        ),
+                    );
+
+                    const position: Vec2f = .add(
+                        .add(options.position, .add(right, up)),
+                        offset,
+                    );
+
+                    const glyph_size = glyph.sub_index.size(g, font.texture);
+                    const scale: Vec2f = .mul(
+                        .div(font_texture_size, glyph_size),
+                        options.scale,
+                    );
+
                     b.draw(glyph.sub_index, .{
                         .position = position,
-                        .scale = .mul(.div(font_texture_size, glyph_size), options.scale),
+                        .scale = scale,
+                        .rotation = options.rotation,
                     });
                 },
             }
+
+            right = .add(right, .scale(
+                rvec,
+                (glyph.advance + options.padding.x) * options.scale.x,
+            ));
         }
 
-        y -= line_height;
+        up = .sub(up, .scale(
+            rvec_rot90,
+            (line_height + options.padding.y) * options.scale.y,
+        ));
     }
 }
 

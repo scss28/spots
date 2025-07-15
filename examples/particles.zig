@@ -120,8 +120,10 @@ pub fn main() !void {
         try g.drawText(text, .{
             .font = font,
             .position = .splat(target_size / 2),
-            .pivot = .splat(0.5),
+            .pivot = .init(0.5, 0.15),
+            .alignment = .center,
             .scale = .splat(0.3 + 0.3 * @sin(t)),
+            .rotation = @sin(t * 2) * 0.2,
         });
 
         g.setTarget(.screen);
